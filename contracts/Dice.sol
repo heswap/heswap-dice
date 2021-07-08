@@ -1,15 +1,15 @@
 pragma solidity 0.6.12;
 
-import "@openzeppelin/contracts/math/SafeMath.sol"
-import "@openzeppelin/contracts/access/Ownable.sol"
-import "@openzeppelin/contracts/utils/Pausable.sol"
-import "@openzeppelin/contracts/security/ReentrancyGuard.sol"
-import "@openzeppelin/contracts/token/ERC20/IERC20.sol"
-import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol"
+import "@openzeppelin/contracts/math/SafeMath.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/utils/Pausable.sol";
+import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import "./libs/IBEP20.sol";
+import "./libs/SafeBEP20.sol";
 
 contract Dice is Ownable, ReentrancyGuard, Pausable {
     using SafeMath for uint256;
-	using SafeERC20 for IERC20;
+	using SafeBEP20 for IBEP20;
 
     uint256 public currentEpoch;
     uint256 public intervalBlocks;
@@ -28,7 +28,7 @@ contract Dice is Ownable, ReentrancyGuard, Pausable {
 
     bool public genesisStartOnce = false;
 
-	IERC20 public token;
+	IBEP20 public token;
 
     struct Round {
         uint256 startBlock;
@@ -64,7 +64,6 @@ contract Dice is Ownable, ReentrancyGuard, Pausable {
     event MinBetAmountUpdated(uint256 indexed epoch, uint256 minBetAmount);
     event RewardsCalculated(
         uint256 indexed epoch,
-        uint256 rewardBaseCalAmount,
         uint256 rewardAmount,
         uint256 treasuryAmount
     );
@@ -77,9 +76,9 @@ contract Dice is Ownable, ReentrancyGuard, Pausable {
         address _operatorAddress,
         uint256 _intervalBlocks,
         uint256 _bufferBlocks,
-        uint256 _minBetAmount,
+        uint256 _minBetAmount
     ) public {
-		token = IERC20(_tokenAddress);
+		token = IBEP20(_tokenAddress);
         adminAddress = _adminAddress;
         operatorAddress = _operatorAddress;
         intervalBlocks = _intervalBlocks;
@@ -236,7 +235,7 @@ contract Dice is Ownable, ReentrancyGuard, Pausable {
      */
     function betNumber(bool[6] calldata numbers, uint256 amount) external whenNotPaused notContract nonReentrant {
         require(_bettable(currentEpoch), "Round not bettable");
-        require(msg.value >= minBetAmount, "Bet amount must be greater than minBetAmount");
+        require(amount >= minBetAmount, "Bet amount must be greater than minBetAmount");
         require(ledger[currentEpoch][msg.sender].amount == 0, "Can only bet once per round");
 
 		token.safeTransferFrom(address(msg.sender), address(this), amount);
@@ -244,7 +243,6 @@ contract Dice is Ownable, ReentrancyGuard, Pausable {
         // Update round data
         Round storage round = rounds[currentEpoch];
         round.totalAmount = round.totalAmount.add(amount);
-        round.bearAmount = round.bearAmount.add(amount);
         round.betUsers = round.betUsers.add(1);
 
         // Update user data
@@ -269,7 +267,6 @@ contract Dice is Ownable, ReentrancyGuard, Pausable {
         // Round valid, claim rewards
         if (rounds[epoch].secretSentBlock != 0) {
             require(claimable(epoch, msg.sender), "Not eligible for claim");
-            Round memory round = rounds[epoch];	
             reward = ledger[epoch][msg.sender].amount.mul(5).mul(TOTAL_RATE.sub(gapRate)).div(TOTAL_RATE);
         }
         // Round invalid, refund bet amount
@@ -293,7 +290,7 @@ contract Dice is Ownable, ReentrancyGuard, Pausable {
         uint256 currentTreasuryAmount = treasuryAmount;
         treasuryAmount = 0;
 		
-		token.safeTransfer(adminAddress, currentTreasuryAmount)
+		token.safeTransfer(adminAddress, currentTreasuryAmount);
 
         emit ClaimTreasury(currentTreasuryAmount);
     }
@@ -334,7 +331,6 @@ contract Dice is Ownable, ReentrancyGuard, Pausable {
      */
     function unpause() public onlyAdmin whenPaused {
         genesisStartOnce = false;
-        genesisLockOnce = false;
         _unpause();
 
         emit Unpause(currentEpoch);
@@ -347,7 +343,7 @@ contract Dice is Ownable, ReentrancyGuard, Pausable {
         BetInfo memory betInfo = ledger[epoch][user];
         Round memory round = rounds[epoch];
 
-        return (round.secretSentBlock != 0) && (betInfo.betNumbers[round.finalNumber]);
+        return (round.secretSentBlock != 0) && (betInfo.numbers[round.finalNumber]);
     }
 
     /**
@@ -373,7 +369,7 @@ contract Dice is Ownable, ReentrancyGuard, Pausable {
         Round storage round = rounds[epoch];
         round.startBlock = block.number;
         round.lockBlock = block.number.add(intervalBlocks);
-		round.bankHash = bankHash
+		round.bankHash = bankHash;
         round.totalAmount = 0;
 
         emit StartRound(epoch, block.number, bankHash);
@@ -402,36 +398,13 @@ contract Dice is Ownable, ReentrancyGuard, Pausable {
         require(rounds[epoch].rewardAmount == 0, "Rewards calculated");
         Round storage round = rounds[epoch];
 
-
-
-        uint256 rewardBaseCalAmount;
-        uint256 rewardAmount;
-        uint256 treasuryAmt;
-        // Bull wins
-        if (round.closePrice > round.lockPrice) {
-            rewardBaseCalAmount = round.bullAmount;
-            rewardAmount = round.totalAmount.mul(rewardRate).div(TOTAL_RATE);
-            treasuryAmt = round.totalAmount.mul(treasuryRate).div(TOTAL_RATE);
-        }
-        // Bear wins
-        else if (round.closePrice < round.lockPrice) {
-            rewardBaseCalAmount = round.bearAmount;
-            rewardAmount = round.totalAmount.mul(rewardRate).div(TOTAL_RATE);
-            treasuryAmt = round.totalAmount.mul(treasuryRate).div(TOTAL_RATE);
-        }
-        // House wins
-        else {
-            rewardBaseCalAmount = 0;
-            rewardAmount = 0;
-            treasuryAmt = round.totalAmount;
-        }
-        round.rewardBaseCalAmount = rewardBaseCalAmount;
-        round.rewardAmount = rewardAmount;
+		round.rewardAmount = round.totalAmount.mul(gapRate).div(TOTAL_RATE);
 
         // Add to treasury
+        uint256 treasuryAmt = round.rewardAmount.mul(treasuryRate).div(TOTAL_RATE);
         treasuryAmount = treasuryAmount.add(treasuryAmt);
 
-        emit RewardsCalculated(epoch, rewardBaseCalAmount, rewardAmount, treasuryAmt);
+        emit RewardsCalculated(epoch, round.rewardAmount, treasuryAmt);
     }
 
     function _isContract(address addr) internal view returns (bool) {
