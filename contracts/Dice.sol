@@ -269,8 +269,8 @@ contract Dice is Ownable, ReentrancyGuard, Pausable {
         // Round valid, claim rewards
         if (rounds[epoch].secretSentBlock != 0) {
             require(claimable(epoch, msg.sender), "Not eligible for claim");
-            Round memory round = rounds[epoch];
-            reward = ledger[epoch][msg.sender].amount.mul(round.rewardAmount).div(round.rewardBaseCalAmount);
+            Round memory round = rounds[epoch];	
+            reward = ledger[epoch][msg.sender].amount.mul(5).mul(TOTAL_RATE.sub(gapRate)).div(TOTAL_RATE);
         }
         // Round invalid, refund bet amount
         else {
@@ -346,10 +346,8 @@ contract Dice is Ownable, ReentrancyGuard, Pausable {
     function claimable(uint256 epoch, address user) public view returns (bool) {
         BetInfo memory betInfo = ledger[epoch][user];
         Round memory round = rounds[epoch];
-        return
-            (round.secretSentBlock != 0) &&
-            ((round.closePrice > round.lockPrice && betInfo.position == Position.Bull) ||
-                (round.closePrice < round.lockPrice && betInfo.position == Position.Bear));
+
+        return (round.secretSentBlock != 0) && (betInfo.betNumbers[round.finalNumber]);
     }
 
     /**
@@ -400,9 +398,12 @@ contract Dice is Ownable, ReentrancyGuard, Pausable {
      * @dev Calculate rewards for round
      */
     function _calculateRewards(uint256 epoch) internal {
-        require(rewardRate.add(treasuryRate) == TOTAL_RATE, "rewardRate and treasuryRate must add up to TOTAL_RATE");
-        require(rounds[epoch].rewardBaseCalAmount == 0 && rounds[epoch].rewardAmount == 0, "Rewards calculated");
+        require(treasuryRate.add(bonusRate).add(edgeRate) == TOTAL_RATE, "treasuryRate and bonusRate and edgeRate must add up to TOTAL_RATE");
+        require(rounds[epoch].rewardAmount == 0, "Rewards calculated");
         Round storage round = rounds[epoch];
+
+
+
         uint256 rewardBaseCalAmount;
         uint256 rewardAmount;
         uint256 treasuryAmt;
