@@ -17,7 +17,6 @@ contract Dice is Ownable, ReentrancyGuard, Pausable {
     address public adminAddress;
     address public operatorAddress;
     uint256 public treasuryAmount;
-    uint256 public oracleLatestRoundId;
 
     uint256 public constant TOTAL_RATE = 100; // 100%
 	uint256 public gapRate = 5;
@@ -26,12 +25,10 @@ contract Dice is Ownable, ReentrancyGuard, Pausable {
 	uint256 public edgeRate = 80; // 80% in gap
 	
     uint256 public minBetAmount;
-    uint256 public oracleUpdateAllowance; // seconds
 
     bool public genesisStartOnce = false;
 
 	IERC20 public token;
-    AggregatorV3Interface internal oracle;
 
     struct Round {
         uint256 startBlock;
@@ -75,21 +72,19 @@ contract Dice is Ownable, ReentrancyGuard, Pausable {
     event Unpause(uint256 epoch);
 
     constructor(
-        AggregatorV3Interface _oracle,
+		address _tokenAddress,
         address _adminAddress,
         address _operatorAddress,
         uint256 _intervalBlocks,
         uint256 _bufferBlocks,
         uint256 _minBetAmount,
-        uint256 _oracleUpdateAllowance
     ) public {
-        oracle = _oracle;
+		token = IERC20(_tokenAddress);
         adminAddress = _adminAddress;
         operatorAddress = _operatorAddress;
         intervalBlocks = _intervalBlocks;
         bufferBlocks = _bufferBlocks;
         minBetAmount = _minBetAmount;
-        oracleUpdateAllowance = _oracleUpdateAllowance;
     }
 
     modifier onlyAdmin() {
@@ -148,22 +143,6 @@ contract Dice is Ownable, ReentrancyGuard, Pausable {
         bufferBlocks = _bufferBlocks;
     }
 
-    /**
-     * @dev set Oracle address
-     * callable by admin
-     */
-    function setOracle(address _oracle) external onlyAdmin {
-        require(_oracle != address(0), "Cannot be zero address");
-        oracle = AggregatorV3Interface(_oracle);
-    }
-
-    /**
-     * @dev set oracle update allowance
-     * callable by admin
-     */
-    function setOracleUpdateAllowance(uint256 _oracleUpdateAllowance) external onlyAdmin {
-        oracleUpdateAllowance = _oracleUpdateAllowance;
-    }
 
     /**
      * @dev set gap rate
@@ -202,28 +181,28 @@ contract Dice is Ownable, ReentrancyGuard, Pausable {
     /**
      * @dev Start genesis round
      */
-    function genesisStartRound() external onlyOperator whenNotPaused {
+    function genesisStartRound(uint256 epoch, bytes32 bankHash) external onlyOperator whenNotPaused {
         require(!genesisStartOnce, "Can only run genesisStartRound once");
+        require(epoch == currentEpoch + 1, "epoch should equals currentEposh + 1");
         
-		bytes32 currentHash = _getHashFromOracle();
         currentEpoch = currentEpoch + 1;
-        _startRound(currentEpoch, currentHash);
+        _startRound(currentEpoch, bankHash);
         genesisStartOnce = true;
     }
 
     /**
      * @dev Start the next round n, lock for round n-1
      */
-    function executeRound() external onlyOperator whenNotPaused nonReentrant {
+    function executeRound(uint256 epoch, bytes32 bankHash) external onlyOperator whenNotPaused nonReentrant {
         require(genesisStartOnce, "Can only run after genesisStartRound is triggered");
+        require(epoch == currentEpoch, "epoch should equals currentEposh");
 
         // CurrentEpoch refers to previous round (n-1)
         _safeLockRound(currentEpoch);
 
         // Increment currentEpoch to current round (n)
-		bytes32 currentHash = _getHashFromOracle();
         currentEpoch = currentEpoch + 1;
-        _safeStartRound(currentEpoch, currentHash);
+        _safeStartRound(currentEpoch, bankHash);
     }
 
 	
@@ -452,19 +431,6 @@ contract Dice is Ownable, ReentrancyGuard, Pausable {
         treasuryAmount = treasuryAmount.add(treasuryAmt);
 
         emit RewardsCalculated(epoch, rewardBaseCalAmount, rewardAmount, treasuryAmt);
-    }
-
-    /**
-     * @dev Get latest recorded price from oracle
-     * If it falls below allowed buffer or has not updated, it would be invalid
-     */
-    function _getHashFromOracle() internal returns (bytes32) {
-        uint256 leastAllowedTimestamp = block.timestamp.add(oracleUpdateAllowance);
-        (uint80 roundId, int256 price, , uint256 timestamp, ) = oracle.latestRoundData();
-        require(timestamp <= leastAllowedTimestamp, "Oracle update exceeded max timestamp allowance");
-        require(roundId > oracleLatestRoundId, "Oracle update roundId must be larger than oracleLatestRoundId");
-        oracleLatestRoundId = uint256(roundId);
-        return price;
     }
 
     function _isContract(address addr) internal view returns (bool) {
