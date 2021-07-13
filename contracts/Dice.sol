@@ -20,32 +20,37 @@ contract Dice is Ownable, ReentrancyGuard, Pausable {
 	uint256 public lastBankerAmount;
 	uint256 public bankerAmount;
 	uint256 public netValue;
+	uint256 public playerStartEpoch;
     uint256 public currentEpoch;
     uint256 public intervalBlocks;
-    uint256 public bufferBlocks;
-    address public adminAddress;
-    address public operatorAddress;
-    uint256 public treasuryAmount;
+    uint256 public bufferBlocks;	
 	uint256 public playerTimeBlocks;
 	uint256 public playerEndBlock;
 	uint256 public bankerTimeBlocks;
 	uint256 public bankerEndBlock;
-
     uint256 public constant TOTAL_RATE = 100; // 100%
 	uint256 public gapRate = 5;
     uint256 public treasuryRate = 10; // 10% in gap
 	uint256 public bonusRate = 10; // 10% in gap
-	uint256 public edgeRate = 80; // 80% in gap
-	
+	uint256 public edgeRate = 80; // 80% in gap	
     uint256 public minBetAmount;
 
-    bool public genesisStartOnce = false;
-
+    address public adminAddress;
+    address public operatorAddress;
+	address public masterChefAddress;
+	address public swapPair;
 	IBEP20 public token;
 	IBEP20 public hswToken;
 	DiceTokean public diceToken;	
 	IHeswapRouter02 public swapRouter;
-	address public swapPair;
+
+	enum Status {
+		Pending,
+		Open,
+		Lock,
+		Claimable,
+		Expired
+	}
 
     struct Round {
         uint256 startBlock;
@@ -54,16 +59,19 @@ contract Dice is Ownable, ReentrancyGuard, Pausable {
 		bytes32 bankHash;
         uint256 bankSecret;
         uint256 totalAmount;
+		uint256 maxBetAmount;
 		uint256[6] betAmounts;
         uint256 rewardAmount;
 		uint256 betUsers;
 		uint32 finalNumber;
+		Status status;
     }
 
     struct BetInfo {
         uint256 amount;
 		bool[6] numbers;
         bool claimed; // default false
+		bool hswClaimed; // default false
     }
 
     mapping(uint256 => Round) public rounds;
@@ -85,8 +93,6 @@ contract Dice is Ownable, ReentrancyGuard, Pausable {
         uint256 treasuryAmount
     );
 	event SwapRouterUpdated(address indexed operator, address indexed router, address indexed pair);
-    event Pause(uint256 epoch);
-    event Unpause(uint256 epoch);
     event EndPlayerTime(uint256 epoch, uint256 blockNumber);
     event EndBankerTime(uint256 epoch, uint256 blockNumber);
 
@@ -113,6 +119,7 @@ contract Dice is Ownable, ReentrancyGuard, Pausable {
 		bankerTimeBlocks = _bankerTimeBlocks;
         minBetAmount = _minBetAmount;
 		netValue = uint256(1e12);
+		_pause();
     }
 
     modifier onlyAdmin() {
@@ -222,26 +229,25 @@ contract Dice is Ownable, ReentrancyGuard, Pausable {
     }
 
     /**
-     * @dev Start genesis round
+     * @dev End banker time
      */
-    function genesisStartRound(uint256 epoch, bytes32 bankHash) external onlyOperator whenNotPaused {
-        require(!genesisStartOnce, "Can only run genesisStartRound once");
+    function endBankerTime(uint256 epoch, bytes32 bankHash) external onlyOperator whenPaused {
         require(epoch == currentEpoch + 1, "epoch should equals currentEposh + 1");
-
         require(bankerAmount > 0, "Round can start only when bankerAmount > 0");
+		prevBankerAmount = bankerAmount;
+        _unpause();
+        emit EndBankerTime(currentEpoch, block.timestamp);
         
         currentEpoch = currentEpoch + 1;
         _startRound(currentEpoch, bankHash);
 		playerEndBlock = rounds[currentEpoch].startBlock + playerTimeBlocks;
 		bankerEndBlock = rounds[currentEpoch].startBlock + bankerTimeBlocks;
-        genesisStartOnce = true;
     }
 
     /**
      * @dev Start the next round n, lock for round n-1
      */
     function executeRound(uint256 epoch, bytes32 bankHash) external onlyOperator whenNotPaused nonReentrant {
-        require(genesisStartOnce, "Can only run after genesisStartRound is triggered");
         require(epoch == currentEpoch, "epoch should equals currentEposh");
 
         // CurrentEpoch refers to previous round (n-1)
@@ -258,37 +264,36 @@ contract Dice is Ownable, ReentrancyGuard, Pausable {
      * @dev called by the admin to end player time, triggers banker time
      */
     function endPlayerTime(uint256 epoch, uint256 bankSecret) external onlyAdminOrOperator whenNotPaused nonReentrant {
-        require(genesisStartOnce, "Can only end player time after genesisStartRound is triggered");
+        require(epoch == currentEpoch, "epoch should equals currentEposh");
 		sendSecret(epoch, bankSecret);
         _pause();
-        emit EndPlayerTime(currentEpoch);
 		_calNetValue(epoch);
+        emit EndPlayerTime(currentEpoch, block.timestamp);
+    }
+
+	/**
+     * @dev called by the admin to end player time without caring last round
+     */
+    function endPlayerTimeImmediately(uint256 epoch) external onlyAdminOrOperator whenNotPaused nonReentrant {
+        require(epoch == currentEpoch, "epoch should equals currentEposh");
+        _pause();
+		_calNetValue(epoch);
+        emit EndPlayerTime(currentEpoch, block.timestamp);
     }
 
 	/**
      * @dev called by the operator to cal net value
      */
     function _calNetValue(uint256 epoch) internal onlyOperator whenPaused nonReentrant{
-		
+		netValue = netValue.mul(bankerAmount).div(preBankerAmount);
     }
 
-	/**
-     * @dev called by the admin to end banker time, triggers player time
-     */
-    function endBankerTime() external onlyAdminOrOperator whenPaused {
-		genesisStartOnce = false;
-        _unpause();
-
-        emit EndBankerTime(currentEpoch);
-    }
-
-	
     /**
      * @dev send bankSecret
      */
 	function sendSecret(uint256 epoch, uint256 bankSecret) public onlyOperator whenNotPaused nonReentrant {
-        require(genesisStartOnce, "Can only run after genesisStartRound is triggered");
         require(rounds[epoch].lockBlock != 0, "Can only end round after round has locked");
+        require(rounds[epoch].status == Status.Lock, "Can only end round after round has locked");
         require(block.number >= rounds[epoch].lockBlock, "Can only send secret after lockBlock");
         require(block.number <= rounds[epoch].lockBlock.add(bufferBlocks), "Can only send secret within bufferBlocks");
 		require(rounds[epoch].bankSecret == 0, "Already revealed");
@@ -304,6 +309,7 @@ contract Dice is Ownable, ReentrancyGuard, Pausable {
 		round.bankSecret = bankSecret;
 		uint256 random = round.bankSecret ^ round.betUsers;
 		round.finalNumber = uint32(random % 6);
+		round.status = Status.Claimable;
 
         emit SendSecretRound(epoch, block.number, bankSecret, round.finalNumber);
     }
@@ -312,6 +318,7 @@ contract Dice is Ownable, ReentrancyGuard, Pausable {
      * @dev bet number
      */
     function betNumber(bool[6] calldata numbers, uint256 amount) external whenNotPaused notContract nonReentrant {
+        require(rounds[currentEpoch].status == Status.Open, "Round not Open");
         require(_bettable(currentEpoch), "Round not bettable");
         require(amount >= minBetAmount, "Bet amount must be greater than minBetAmount");
         require(ledger[currentEpoch][msg.sender].amount == 0, "Can only bet once per round");
@@ -343,7 +350,7 @@ contract Dice is Ownable, ReentrancyGuard, Pausable {
 
         uint256 reward;
         // Round valid, claim rewards
-        if (rounds[epoch].secretSentBlock != 0) {
+        if (rounds[epoch].status == Status.Claimable) {
             require(claimable(epoch, msg.sender), "Not eligible for claim");
             reward = ledger[epoch][msg.sender].amount.mul(5).mul(TOTAL_RATE.sub(gapRate)).div(TOTAL_RATE);
         }
@@ -395,33 +402,13 @@ contract Dice is Ownable, ReentrancyGuard, Pausable {
     }
 
     /**
-     * @dev called by the admin to pause, triggers stopped state
-     */
-    function pause() public onlyAdminOrOperator whenNotPaused {
-        _pause();
-
-        emit Pause(currentEpoch);
-    }
-
-    /**
-     * @dev called by the admin to unpause, returns to normal state
-     * Reset genesis state. Once paused, the rounds would need to be kickstarted by genesis
-     */
-    function unpause() public onlyAdmin whenPaused {
-        genesisStartOnce = false;
-        _unpause();
-
-        emit Unpause(currentEpoch);
-    }
-
-    /**
      * @dev Get the claimable stats of specific epoch and user account
      */
     function claimable(uint256 epoch, address user) public view returns (bool) {
         BetInfo memory betInfo = ledger[epoch][user];
         Round memory round = rounds[epoch];
 
-        return (round.secretSentBlock != 0) && (betInfo.numbers[round.finalNumber]);
+        return (round.status == Status.Claimable) && (betInfo.numbers[round.finalNumber]);
     }
 
     /**
@@ -430,7 +417,7 @@ contract Dice is Ownable, ReentrancyGuard, Pausable {
     function refundable(uint256 epoch, address user) public view returns (bool) {
         BetInfo memory betInfo = ledger[epoch][user];
         Round memory round = rounds[epoch];
-        return (round.secretSentBlock == 0) && block.number > round.lockBlock.add(bufferBlocks) && betInfo.amount != 0;
+        return (round.status != Status.Claimable) && block.number > round.lockBlock.add(bufferBlocks) && betInfo.amount != 0;
     }
 
     /**
@@ -438,7 +425,6 @@ contract Dice is Ownable, ReentrancyGuard, Pausable {
      * Previous round n-1 must lock
      */
     function _safeStartRound(uint256 epoch, bytes32 bankHash) internal {
-        require(genesisStartOnce, "Can only run after genesisStartRound is triggered");
         require(block.number >= rounds[epoch - 1].lockBlock, "Can only start new round after round n-1 lockBlock");
         _startRound(epoch, bankHash);
     }
@@ -449,6 +435,7 @@ contract Dice is Ownable, ReentrancyGuard, Pausable {
         round.lockBlock = block.number.add(intervalBlocks);
 		round.bankHash = bankHash;
         round.totalAmount = 0;
+		round.status = Status.Open;
 
         emit StartRound(epoch, block.number, bankHash);
     }
@@ -464,6 +451,7 @@ contract Dice is Ownable, ReentrancyGuard, Pausable {
     }
 
     function _lockRound(uint256 epoch) internal {
+		rounds[epoch].status = Status.Lock
         emit LockRound(epoch, block.number);
     }
 
