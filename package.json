@@ -13,7 +13,6 @@
     "@openzeppelin/test-helpers": "^0.5.6",
     "@truffle/hdwallet-provider": "^1.0.21",
     "@uniswap/v2-periphery": "^1.1.0-beta.0",
-	"truffle-plugin-verify": "0.5.8",
     "dotenv": "^8.2.0",
     "chai": "^4.2.0",
     "ethereum-waffle": "^2.4.1",
@@ -22,19 +21,11 @@
     "ncp": "^2.0.0",
     "prettier": "^1.19.1",
     "rimraf": "^3.0.0",
-    "solc": "0.6.6",
+    "solc": "0.6.12",
+    "truffle": "^5.3.14",
+    "truffle-plugin-verify": "0.5.8",
     "ts-node": "^8.5.4",
     "typescript": "^3.7.3"
-  },
-  "scripts": {
-    "lint": "yarn prettier ./test/*.ts --check",
-    "lint:fix": "yarn prettier ./test/*.ts --write",
-    "clean": "rimraf ./build/",
-    "precompile": "yarn clean",
-    "compile": "waffle .waffle.json",
-    "pretest": "yarn compile",
-    "test": "mocha",
-    "prepublishOnly": "yarn test"
   },
   "license": "MIT"
 }

@@ -7,9 +7,14 @@ module.exports = {
     'truffle-plugin-verify'
   ],
   api_keys:{
-	bscscan: process.env.BSC_API_KEY
+    bscscan: process.env.BSC_API_KEY
   },
   networks: {
+    development: {
+      host: "127.0.0.1",     // Localhost (default: none)
+      port: 9545,            // Standard BSC port (default: none)
+      network_id: "*",       // Any network (default: none)
+    },
     testnet: {
       provider: () => new HDWalletProvider(process.env.MNEMONIC, 'https://data-seed-prebsc-1-s1.binance.org:8545'),
       network_id: 97
