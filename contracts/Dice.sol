@@ -12,6 +12,7 @@ import "./libs/SafeBEP20.sol";
 import "./libs/IHeswapRouter02.sol";
 import "./libs/IHeswapFactory.sol";
 import "./libs/IHeswapPair.sol";
+import "./libs/IMasterChef.sol";
 
 contract Dice is Ownable, ReentrancyGuard, Pausable {
     using SafeMath for uint256;
@@ -35,7 +36,7 @@ contract Dice is Ownable, ReentrancyGuard, Pausable {
     uint256 public minBetAmount;
 	uint256 public totalTreasuryAmount;
 	uint256 public constant deadline = 5 minutes;
-	uint256 public masterChefPoolId;
+	uint256 public masterChefBonusId;
 
     address public adminAddress;
     address public operatorAddress;
@@ -121,7 +122,7 @@ contract Dice is Ownable, ReentrancyGuard, Pausable {
 		address _masterChefAddress,
         address _adminAddress,
         address _operatorAddress,
-		uint256 _masterChefPoolId,
+		uint256 _masterChefBonusId,
         uint256 _intervalBlocks,
         uint256 _bufferBlocks,
 		uint256 _playerTimeBlocks,
@@ -136,7 +137,7 @@ contract Dice is Ownable, ReentrancyGuard, Pausable {
 		masterChefAddress = _masterChefAddress;
         adminAddress = _adminAddress;
         operatorAddress = _operatorAddress;
-		masterChefPoolId = _masterChefPoolId;
+		masterChefBonusId = _masterChefBonusId;
         intervalBlocks = _intervalBlocks;
         bufferBlocks = _bufferBlocks;
 		playerTimeBlocks = _playerTimeBlocks;
@@ -475,9 +476,10 @@ contract Dice is Ownable, ReentrancyGuard, Pausable {
     function claimTreasury() public onlyOperator nonReentrant {
         uint256 currentTreasuryAmount = totalTreasuryAmount;
         totalTreasuryAmount = 0;
-		
-		token.safeTransfer(masterChefAddress, currentTreasuryAmount);
+
 		// TODO: update masterChef bonus pool
+		//token.safeTransfer(masterChefAddress, currentTreasuryAmount);
+		IMasterChef(masterChefAddress).updateBonus(masterChefBonusId, currentTreasuryAmount);
 
         emit ClaimTreasury(currentTreasuryAmount);
     }
