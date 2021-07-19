@@ -557,12 +557,12 @@ contract Dice is Ownable, ReentrancyGuard, Pausable {
     function withdraw(uint256 _diceTokenAmount) public whenPaused nonReentrant notContract {
         require(_diceTokenAmount > 0, "diceTokenAmount > 0");
         BankerInfo storage banker = bankerInfo[msg.sender];
+        banker.diceTokenAmount = banker.diceTokenAmount.sub(_diceTokenAmount); 
         SafeBEP20.safeTransferFrom(diceToken, msg.sender, address(diceToken), _diceTokenAmount);
         diceToken.burn(address(diceToken), _diceTokenAmount);
         uint256 tokenAmount = _diceTokenAmount.mul(netValue).div(1e12);
-        token.safeTransferFrom(address(this), address(msg.sender), tokenAmount);
-        banker.diceTokenAmount = banker.diceTokenAmount.sub(_diceTokenAmount);    
         bankerAmount = bankerAmount.sub(tokenAmount);
+        token.safeTransferFrom(address(this), address(msg.sender), tokenAmount);
 
         emit Withdraw(msg.sender, _diceTokenAmount);
     }
